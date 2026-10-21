@@ -52,3 +52,7 @@ The prefix is recognised only when it exactly matches a known puzzle ID; otherwi
 - This is an unofficial companion tool, not part of the Cubedex application.
 - The editor is a single HTML file and runs entirely in the browser; nothing is uploaded.
 - If Cubedex adds another puzzle ID in future, add it to the `PUZZLES` list near the top of the editor script.
+
+## License
+
+This is free and unencumbered software released into the public domain under the [Unlicense](LICENSE). No copyright claim is made.
