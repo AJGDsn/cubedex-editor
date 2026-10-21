@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cubedex Algorithm Editor</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.10.0/dist/tabler-icons.min.css">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+:root {
+  --bg0: #ffffff; --bg1: #f5f4f1; --bg2: #eceae6;
+  --tx0: #111110; --tx1: #55534c; --tx2: #99978f;
+  --bd0: rgba(0,0,0,0.10); --bd1: rgba(0,0,0,0.22); --bd2: rgba(0,0,0,0.38);
+  --acc: #2a7fd4; --acc-bg: #e6f0fa; --acc-tx: #185aa0;
+  --red: #b33030; --red-bg: #fdeaea; --red-bd: #e06060;
+  --grn: #3a6b10; --grn-bg: #eaf3de;
+  --radius: 8px; --mono: 'Menlo','Consolas','Monaco',monospace;
+  --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg0:#1b1b1a; --bg1:#232321; --bg2:#2b2b29;
+    --tx0:#f0ede8; --tx1:#a8a49c; --tx2:#6b6760;
+    --bd0:rgba(255,255,255,0.09); --bd1:rgba(255,255,255,0.18); --bd2:rgba(255,255,255,0.32);
+    --acc:#4a9ae8; --acc-bg:#082540; --acc-tx:#7ec2f5;
+    --red:#e07070; --red-bg:#3a1010; --red-bd:#803030;
+    --grn:#90c050; --grn-bg:#162604;
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{height:100%;font-family:var(--sans);background:var(--bg0);color:var(--tx0);font-size:14px}
+input,textarea,select{
+  font-family:var(--sans);font-size:13px;color:var(--tx0);
+  background:var(--bg0);border:1px solid var(--bd1);
+  border-radius:var(--radius);padding:5px 9px;outline:none;height:30px;width:100%;
+}
+select{cursor:pointer}
+input:focus,select:focus{border-color:var(--acc);box-shadow:0 0 0 2px rgba(42,127,212,0.18)}
+button{
+  font-family:var(--sans);font-size:13px;color:var(--tx0);
+  background:transparent;border:1px solid var(--bd1);border-radius:var(--radius);
+  padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;
+  white-space:nowrap;height:28px;transition:background 0.1s;
+}
+button:hover{background:var(--bg1)}
+button:active{transform:scale(0.97)}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:var(--bd1);border-radius:3px}
+
+/* Drag states */
+.drag-over-group{background:var(--acc-bg)!important;border-left-color:var(--acc)!important}
+.drag-over-subset{background:var(--acc-bg)!important;outline:1px dashed var(--acc)}
+.drag-over-alg{border-top:2px solid var(--acc)!important}
+.drag-over-alg-bot{border-bottom:2px solid var(--acc)!important}
+.dragging{opacity:0.35}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useRef,useCallback}=React;
+
+/* Cubedex stores every alg set in one flat object. A set's puzzle is encoded in
+   its key: 3x3x3 sets have no prefix ("PLL"), all other puzzles use
+   "<puzzle-id>:<set name>" (for example "2x2x2:CLL" or "pyraminx:Last Layer").
+   The registry below mirrors src/lib/puzzles.ts in poliva/cubedex. */
+const PUZZLES=[
+  {id:'3x3x3',label:'3×3'},
+  {id:'2x2x2',label:'2×2'},
+  {id:'4x4x4',label:'4×4'},
+  {id:'5x5x5',label:'5×5'},
+  {id:'pyraminx',label:'Pyraminx'},
+  {id:'megaminx',label:'Megaminx'},
+  {id:'square1',label:'Square-1',legacy:true},
+];
+const PUZZLE_BY_ID=Object.fromEntries(PUZZLES.map(p=>[p.id,p]));
+const DEFAULT_PUZZLE='3x3x3';
+
+function splitCategory(key){
+  const i=key.indexOf(':');
+  if(i>0){
+    const prefix=key.slice(0,i);
+    if(PUZZLE_BY_ID[prefix]) return {puzzle:prefix,name:key.slice(i+1)};
+  }
+  return {puzzle:DEFAULT_PUZZLE,name:key};
+}
+function categoryKey(puzzle,name){
+  return puzzle===DEFAULT_PUZZLE?name:`${puzzle}:${name}`;
+}
+function groupName(key){ return splitCategory(key).name; }
+function groupPuzzle(key){ return splitCategory(key).puzzle; }
+function puzzleLabel(id){ return (PUZZLE_BY_ID[id]||PUZZLE_BY_ID[DEFAULT_PUZZLE]).label; }
+function isLibrary(value){
+  if(!value||typeof value!=='object'||Array.isArray(value)) return false;
+  return Object.values(value).every(subsets=>
+    Array.isArray(subsets)&&subsets.every(sub=>
+      sub&&typeof sub==='object'&&typeof sub.subset==='string'&&Array.isArray(sub.algorithms)&&
+      sub.algorithms.every(alg=>alg&&typeof alg==='object'&&typeof alg.name==='string'&&typeof alg.algorithm==='string')
+    )
+  );
+}
+
+function AlgDisplay({alg}){
+  return(
+    <span style={{fontFamily:'var(--mono)',fontSize:13,color:'var(--tx1)'}}>{alg}</span>
+  );
+}
+
+function Badge({children,accent=false,danger=false}){
+  return(
+    <span style={{
+      fontSize:11,fontWeight:500,padding:'2px 7px',borderRadius:20,whiteSpace:'nowrap',flexShrink:0,
+      background:danger?'var(--red-bg)':accent?'var(--acc-bg)':'var(--bg2)',
+      color:danger?'var(--red)':accent?'var(--acc-tx)':'var(--tx1)',
+      border:`0.5px solid ${danger?'var(--red-bd)':accent?'var(--acc)':'var(--bd1)'}`,
+    }}>{children}</span>
+  );
+}
+
+function App(){
+  const [data,setData]=useState(null);
+  const [groupOrder,setGroupOrder]=useState([]);
+  const [selPuzzle,setSelPuzzle]=useState(DEFAULT_PUZZLE);
+  const [selGroup,setSelGroup]=useState(null);
+  const [selSubset,setSelSubset]=useState(null);
+  const [editingAlg,setEditingAlg]=useState(null);
+  const [editVals,setEditVals]=useState({name:'',algorithm:''});
+  const [addingAlg,setAddingAlg]=useState(false);
+  const [newAlg,setNewAlg]=useState({name:'',algorithm:''});
+  const [addingSubset,setAddingSubset]=useState(false);
+  const [newSubsetName,setNewSubsetName]=useState('');
+  const [addingGroup,setAddingGroup]=useState(false);
+  const [newGroupName,setNewGroupName]=useState('');
+  const [status,setStatus]=useState('');
+  const [search,setSearch]=useState('');
+  const [editingGroupName,setEditingGroupName]=useState(null);
+  const [editingSubsetName,setEditingSubsetName]=useState(null);
+  const [inlineVal,setInlineVal]=useState('');
+  const fileRef=useRef();
+
+  // Drag state
+  const [dragGroup,setDragGroup]=useState(null);
+  const [dragOverGroup,setDragOverGroup]=useState(null);
+  const [dragSubset,setDragSubset]=useState(null);
+  const [dragOverSubsetOrder,setDragOverSubsetOrder]=useState(null);
+  const [dragAlg,setDragAlg]=useState(null); // {group,subset,index}
+  const [dragOverAlg,setDragOverAlg]=useState(null); // {subset,index,position:'top'|'bot'}
+  const [dragOverSubset,setDragOverSubset]=useState(null);
+
+  const flash=m=>{setStatus(m);setTimeout(()=>setStatus(''),2000)};
+
+  const renameGroup=(oldKey,newName)=>{
+    newName=newName.trim();
+    if(!newName||newName===groupName(oldKey)){setEditingGroupName(null);return;}
+    if(newName.includes(':')){
+      alert("Set names can't contain ':' — that character separates the puzzle from the set name in Cubedex.");
+      return;
+    }
+    const puzzle=groupPuzzle(oldKey);
+    const newKey=categoryKey(puzzle,newName);
+    if(data[newKey]){alert(`A ${puzzleLabel(puzzle)} set named "${newName}" already exists.`);return;}
+    setData(prev=>{
+      const n=structuredClone(prev);
+      n[newKey]=n[oldKey];
+      delete n[oldKey];
+      return n;
+    });
+    setGroupOrder(prev=>prev.map(g=>g===oldKey?newKey:g));
+    if(selGroup===oldKey) setSelGroup(newKey);
+    setEditingGroupName(null);
+    flash('Renamed ✓');
+  };
+
+  const renameSubset=(oldName,newName)=>{
+    newName=newName.trim();
+    if(!newName||newName===oldName){setEditingSubsetName(null);return;}
+    if(subsets.some(s=>s.subset===newName)){alert('A subset with that name already exists.');return;}
+    setData(prev=>{
+      const n=structuredClone(prev);
+      const sub=n[selGroup].find(s=>s.subset===oldName);
+      if(sub) sub.subset=newName;
+      return n;
+    });
+    if(selSubset===oldName) setSelSubset(newName);
+    setEditingSubsetName(null);
+    flash('Renamed ✓');
+  };
+
+  const loadFile=e=>{
+    const f=e.target.files[0]; if(!f) return; e.target.value='';
+    const r=new FileReader();
+    r.onload=ev=>{
+      try{
+        const p=JSON.parse(ev.target.result);
+        if(!isLibrary(p)) throw new Error('Unexpected structure');
+        const order=Object.keys(p);
+        if(order.length===0) throw new Error('Empty library');
+        const first=order[0];
+        setData(p);
+        setGroupOrder(order);
+        setSelPuzzle(groupPuzzle(first));
+        setSelGroup(first);
+        setSelSubset(p[first]?.[0]?.subset||null);
+        setSearch('');
+        setEditingAlg(null);setAddingAlg(false);setAddingSubset(false);
+        flash(`Loaded ${order.length} sets`);
+      }catch{alert('Could not parse — make sure this is a valid Cubedex JSON export.');}
+    };
+    r.readAsText(f);
+  };
+
+  const exportFile=async()=>{
+    // Keep every loaded key, even if its cube isn't currently selected.
+    const ordered={};
+    const seen=new Set();
+    groupOrder.forEach(g=>{ if(data[g]){ordered[g]=data[g];seen.add(g);} });
+    Object.keys(data).forEach(g=>{ if(!seen.has(g)) ordered[g]=data[g]; });
+    const json=JSON.stringify(ordered,null,2);
+    if(window.showSaveFilePicker){
+      try{
+        const fh=await window.showSaveFilePicker({
+          suggestedName:'cubedex_algorithms.json',
+          types:[{description:'JSON file',accept:{'application/json':['.json']}}],
+        });
+        const w=await fh.createWritable();
+        await w.write(json);
+        await w.close();
+        flash('Saved ✓');
+      }catch(e){
+        if(e.name!=='AbortError') flash('Save failed');
+      }
+    } else {
+      // Fallback: plain download with name prompt
+      const name=prompt('File name:','cubedex_algorithms.json');
+      if(!name) return;
+      const blob=new Blob([json],{type:'application/json'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url;a.download=name.endsWith('.json')?name:name+'.json';a.click();
+      URL.revokeObjectURL(url);
+      flash('Exported ✓');
+    }
+  };
+
+  const subsets=data&&selGroup?data[selGroup]:[];
+  const curSubset=subsets.find(s=>s.subset===selSubset);
+  const visibleGroupKeys=data?groupOrder.filter(g=>data[g]&&groupPuzzle(g)===selPuzzle):[];
+  const visiblePuzzles=PUZZLES.filter(p=>!p.legacy||p.id===selPuzzle||groupOrder.some(g=>data&&data[g]&&groupPuzzle(g)===p.id));
+  const cubeStats=puzzle=>{
+    let groups=0,subsets=0,algs=0;
+    groupOrder.forEach(g=>{
+      if(!data||!data[g]||groupPuzzle(g)!==puzzle) return;
+      groups+=1;subsets+=data[g].length;algs+=algCount(g);
+    });
+    return {groups,subsets,algs};
+  };
+
+  const selectPuzzle=puzzle=>{
+    if(puzzle===selPuzzle) return;
+    const first=groupOrder.find(g=>data[g]&&groupPuzzle(g)===puzzle)||null;
+    setSelPuzzle(puzzle);
+    setSelGroup(first);
+    setSelSubset(first&&data[first]?data[first][0]?.subset||null:null);
+    setEditingAlg(null);setAddingAlg(false);setAddingSubset(false);
+    setEditingGroupName(null);setEditingSubsetName(null);
+  };
+
+  const searchResults=useCallback(()=>{
+    if(!data||!search.trim()) return [];
+    const q=search.toLowerCase();
+    const res=[];
+    for(const g of groupOrder){
+      if(!data[g]) continue;
+      const {puzzle,name}=splitCategory(g);
+      for(const sub of data[g]){
+        for(const alg of sub.algorithms){
+          if(alg.name.toLowerCase().includes(q)||alg.algorithm.toLowerCase().includes(q)||
+             sub.subset.toLowerCase().includes(q)||name.toLowerCase().includes(q)||
+             g.toLowerCase().includes(q)||puzzle.toLowerCase().includes(q)||
+             puzzleLabel(puzzle).toLowerCase().includes(q)){
+            res.push({group:g,groupName:name,puzzle,subset:sub.subset,...alg});
+          }
+        }
+      }
+    }
+    return res;
+  },[data,search,groupOrder]);
+
+  const saveEdit=()=>{
+    if(!editVals.name.trim()||!editVals.algorithm.trim()) return;
+    setData(prev=>{
+      const n=structuredClone(prev);
+      const sub=n[selGroup].find(s=>s.subset===selSubset);
+      const idx=sub.algorithms.findIndex(a=>a.name===editingAlg);
+      if(idx>=0) sub.algorithms[idx]={name:editVals.name.trim(),algorithm:editVals.algorithm.trim()};
+      return n;
+    });
+    setEditingAlg(null);flash('Saved ✓');
+  };
+
+  const deleteAlg=name=>{
+    if(!confirm(`Delete "${name}"?`)) return;
+    setData(prev=>{
+      const n=structuredClone(prev);
+      n[selGroup].find(s=>s.subset===selSubset).algorithms=
+        n[selGroup].find(s=>s.subset===selSubset).algorithms.filter(a=>a.name!==name);
+      return n;
+    });
+  };
+
+  const addAlg=()=>{
+    if(!newAlg.name.trim()||!newAlg.algorithm.trim()) return;
+    setData(prev=>{
+      const n=structuredClone(prev);
+      n[selGroup].find(s=>s.subset===selSubset).algorithms.push({name:newAlg.name.trim(),algorithm:newAlg.algorithm.trim()});
+      return n;
+    });
+    setNewAlg({name:'',algorithm:''});setAddingAlg(false);flash('Added ✓');
+  };
+
+  const addSubset=()=>{
+    if(!newSubsetName.trim()) return;
+    setData(prev=>{
+      const n=structuredClone(prev);
+      n[selGroup].push({subset:newSubsetName.trim(),algorithms:[]});
+      return n;
+    });
+    setSelSubset(newSubsetName.trim());setNewSubsetName('');setAddingSubset(false);
+  };
+
+  const deleteSubset=name=>{
+    if(!confirm(`Delete subset "${name}" and all its algorithms?`)) return;
+    setData(prev=>{
+      const n=structuredClone(prev);
+      n[selGroup]=n[selGroup].filter(s=>s.subset!==name);
+      return n;
+    });
+    const rem=subsets.filter(s=>s.subset!==name);
+    setSelSubset(rem[0]?.subset||null);
+  };
+
+  const addGroup=()=>{
+    const name=newGroupName.trim();
+    if(!name) return;
+    if(name.includes(':')){
+      alert("Set names can't contain ':' — that character separates the puzzle from the set name in Cubedex.");
+      return;
+    }
+    const key=categoryKey(selPuzzle,name);
+    if(data[key]){alert(`A ${puzzleLabel(selPuzzle)} set named "${name}" already exists.`);return;}
+    setData(prev=>({...prev,[key]:[]}));
+    setGroupOrder(prev=>[...prev,key]);
+    setSelGroup(key);setSelSubset(null);setNewGroupName('');setAddingGroup(false);
+    flash(`Added ${puzzleLabel(selPuzzle)} set ✓`);
+  };
+
+  const deleteGroup=key=>{
+    const {puzzle,name}=splitCategory(key);
+    if(!confirm(`Delete the ${puzzleLabel(puzzle)} set "${name}" and all its subsets?`)) return;
+    setData(prev=>{const n=structuredClone(prev);delete n[key];return n;});
+    const rem=groupOrder.filter(g=>g!==key&&data[g]&&groupPuzzle(g)===puzzle);
+    setGroupOrder(prev=>prev.filter(g=>g!==key));
+    setSelGroup(rem[0]||null);
+    setSelSubset(rem[0]&&data[rem[0]]?data[rem[0]][0]?.subset||null:null);
+  };
+
+  const moveGroupToPuzzle=target=>{
+    if(!selGroup) return;
+    const {puzzle,name}=splitCategory(selGroup);
+    if(target===puzzle) return;
+    if(name.includes(':')||(target===DEFAULT_PUZZLE&&splitCategory(name).puzzle!==DEFAULT_PUZZLE)){
+      alert("This set name can't be used on that puzzle because it contains a ':' prefix.");
+      return;
+    }
+    const newKey=categoryKey(target,name);
+    if(data[newKey]){alert(`A ${puzzleLabel(target)} set named "${name}" already exists.`);return;}
+    setData(prev=>{
+      const n=structuredClone(prev);
+      n[newKey]=n[selGroup];
+      delete n[selGroup];
+      return n;
+    });
+    setGroupOrder(prev=>prev.map(g=>g===selGroup?newKey:g));
+    setSelGroup(newKey);setSelPuzzle(target);
+    flash(`Moved to ${puzzleLabel(target)} ✓`);
+  };
+
+  const algCount=g=>data&&data[g]?data[g].reduce((a,s)=>a+s.algorithms.length,0):0;
+
+  /* ── GROUP DRAG & DROP ── */
+  const onGroupDragStart=(e,g)=>{
+    setDragGroup(g);
+    e.dataTransfer.effectAllowed='move';
+    e.dataTransfer.setData('type','group');
+  };
+  const onGroupDragOver=(e,g)=>{
+    if(!dragGroup||dragGroup===g) return;
+    e.preventDefault();e.dataTransfer.dropEffect='move';
+    setDragOverGroup(g);
+  };
+  const onGroupDrop=(e,target)=>{
+    e.preventDefault();
+    if(!dragGroup||dragGroup===target) return;
+    setGroupOrder(prev=>{
+      const visible=prev.filter(g=>data[g]&&groupPuzzle(g)===selPuzzle);
+      const from=visible.indexOf(dragGroup);
+      const to=visible.indexOf(target);
+      if(from<0||to<0) return prev;
+      const reordered=[...visible];
+      const [moved]=reordered.splice(from,1);
+      reordered.splice(to,0,moved);
+      let i=0;
+      // Reorder only this puzzle's sets, leaving other puzzles' positions intact.
+      return prev.map(g=>(data[g]&&groupPuzzle(g)===selPuzzle)?reordered[i++]:g);
+    });
+    setDragGroup(null);setDragOverGroup(null);
+  };
+  const onGroupDragEnd=()=>{setDragGroup(null);setDragOverGroup(null);};
+
+  /* ── SUBSET DRAG & DROP ── */
+  const onSubsetDragStart=(e,name)=>{
+    if(dragAlg) return;
+    setDragSubset(name);
+    e.dataTransfer.effectAllowed='move';
+    e.dataTransfer.setData('type','subset');
+  };
+  const onSubsetOrderDragOver=(e,name)=>{
+    if(!dragSubset||dragSubset===name) return;
+    e.preventDefault();e.stopPropagation();
+    setDragOverSubsetOrder(name);
+  };
+  const onSubsetOrderDrop=(e,target)=>{
+    e.preventDefault();e.stopPropagation();
+    if(!dragSubset||dragSubset===target) return;
+    setData(prev=>{
+      const n=structuredClone(prev);
+      const arr=[...n[selGroup]];
+      const from=arr.findIndex(s=>s.subset===dragSubset);
+      const to=arr.findIndex(s=>s.subset===target);
+      const [moved]=arr.splice(from,1);
+      arr.splice(to,0,moved);
+      n[selGroup]=arr;
+      return n;
+    });
+    setDragSubset(null);setDragOverSubsetOrder(null);
+  };
+  const onSubsetDragEnd=()=>{setDragSubset(null);setDragOverSubsetOrder(null);};
+
+  /* ── ALGORITHM DRAG & DROP ── */
+  const onAlgDragStart=(e,subset,index)=>{
+    setDragAlg({group:selGroup,subset,index});
+    e.dataTransfer.effectAllowed='move';
+    e.dataTransfer.setData('type','alg');
+  };
+  const onAlgDragOver=(e,subset,index)=>{
+    if(!dragAlg) return;
+    e.preventDefault();e.stopPropagation();
+    const rect=e.currentTarget.getBoundingClientRect();
+    const position=e.clientY<rect.top+rect.height/2?'top':'bot';
+    setDragOverAlg({subset,index,position});
+    setDragOverSubset(null);
+  };
+  const onAlgDrop=(e,targetSubset,targetIndex)=>{
+    e.preventDefault();e.stopPropagation();
+    if(!dragAlg) return;
+    const {group:srcGroup,subset:srcSubset,index:srcIndex}=dragAlg;
+    const rect=e.currentTarget.getBoundingClientRect();
+    const position=e.clientY<rect.top+rect.height/2?'top':'bot';
+    setData(prev=>{
+      const n=structuredClone(prev);
+      const srcSub=n[srcGroup].find(s=>s.subset===srcSubset);
+      const [moved]=srcSub.algorithms.splice(srcIndex,1);
+      const tgtSub=n[selGroup].find(s=>s.subset===targetSubset);
+      // adjust target index after removal if same subset
+      let ti=targetIndex;
+      if(srcSubset===targetSubset && srcIndex<targetIndex) ti--;
+      if(position==='bot') ti++;
+      ti=Math.max(0,Math.min(ti,tgtSub.algorithms.length));
+      tgtSub.algorithms.splice(ti,0,moved);
+      return n;
+    });
+    setDragAlg(null);setDragOverAlg(null);setDragOverSubset(null);
+    if(srcSubset!==targetSubset) flash(`Moved to ${targetSubset}`);
+  };
+  // Drop on empty subset area or subset sidebar item
+  const onSubsetDropZone=(e,targetSubset)=>{
+    e.preventDefault();e.stopPropagation();
+    if(!dragAlg) return;
+    const {group:srcGroup,subset:srcSubset,index:srcIndex}=dragAlg;
+    setData(prev=>{
+      const n=structuredClone(prev);
+      const srcSub=n[srcGroup].find(s=>s.subset===srcSubset);
+      const [moved]=srcSub.algorithms.splice(srcIndex,1);
+      const tgtSub=n[selGroup].find(s=>s.subset===targetSubset);
+      tgtSub.algorithms.push(moved);
+      return n;
+    });
+    setDragAlg(null);setDragOverAlg(null);setDragOverSubset(null);
+    flash(`Moved to ${targetSubset}`);
+  };
+  const onAlgDragEnd=()=>{setDragAlg(null);setDragOverAlg(null);setDragOverSubset(null);};
+
+  const isSearching=search.trim().length>0;
+  const results=isSearching?searchResults():[];
+
+  /* ── LOAD SCREEN ── */
+  if(!data) return(
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:'var(--bg1)'}}>
+      <div style={{maxWidth:440,width:'90%',background:'var(--bg0)',border:'1px solid var(--bd0)',borderRadius:12,padding:'2.5rem 2rem',textAlign:'center'}}>
+        <div style={{fontSize:52,marginBottom:'1rem',lineHeight:1}}>🧊</div>
+        <h1 style={{fontSize:20,fontWeight:700,marginBottom:'0.5rem'}}>Cubedex Algorithm Editor</h1>
+        <p style={{color:'var(--tx1)',fontSize:14,marginBottom:'1.5rem',lineHeight:1.7}}>
+          Load your Cubedex JSON export to browse, edit, reorder, and manage algorithm sets for 3×3, 2×2, 4×4, 5×5, Pyraminx and Megaminx. Export back when done.
+        </p>
+        <button onClick={()=>fileRef.current.click()} style={{fontSize:14,padding:'9px 28px',fontWeight:600,height:'auto'}}>
+          <i className="ti ti-upload"></i> Load JSON file
+        </button>
+        <input type="file" accept=".json" ref={fileRef} onChange={loadFile} style={{display:'none'}}/>
+        <p style={{color:'var(--tx2)',fontSize:12,marginTop:'1rem'}}>Cubedex algorithm export format (.json)</p>
+      </div>
+    </div>
+  );
+
+  /* ── MAIN APP ── */
+  return(
+    <div style={{display:'flex',flexDirection:'column',height:'100vh',overflow:'hidden'}}>
+
+      {/* Toolbar */}
+      <div style={{display:'flex',alignItems:'center',gap:10,padding:'7px 14px',borderBottom:'1px solid var(--bd0)',background:'var(--bg0)',flexShrink:0,flexWrap:'wrap'}}>
+        <span style={{fontSize:18,lineHeight:1}}>🧊</span>
+        <span style={{fontWeight:700,fontSize:14}}>Cubedex Editor</span>
+        <div style={{flex:1,minWidth:100,maxWidth:280,position:'relative'}}>
+          <i className="ti ti-search" style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',fontSize:13,color:'var(--tx2)',pointerEvents:'none'}}></i>
+          <input type="text" placeholder="Search all algorithms…" value={search} onChange={e=>setSearch(e.target.value)}
+            style={{paddingLeft:28,height:28,fontSize:13}}/>
+        </div>
+        <div style={{marginLeft:'auto',display:'flex',gap:7,alignItems:'center'}}>
+          {status&&<span style={{fontSize:12,color:'var(--grn)',fontWeight:600}}>{status}</span>}
+          <button onClick={()=>fileRef.current.click()} style={{fontSize:12,height:26,padding:'0 10px'}}>
+            <i className="ti ti-upload" style={{fontSize:12}}></i> Load
+          </button>
+          <input type="file" accept=".json" ref={fileRef} onChange={loadFile} style={{display:'none'}}/>
+          <button onClick={exportFile} style={{fontSize:12,height:26,padding:'0 10px'}}>
+            <i className="ti ti-download" style={{fontSize:12}}></i> Export JSON
+          </button>
+        </div>
+      </div>
+
+      {/* Search overlay */}
+      {isSearching?(
+        <div style={{flex:1,overflowY:'auto',padding:14}}>
+          <div style={{fontSize:12,color:'var(--tx1)',marginBottom:10}}>
+            {results.length} result{results.length!==1?'s':''} for "<strong>{search}</strong>" across all puzzles
+          </div>
+          {results.length===0
+            ?<div style={{textAlign:'center',padding:'3rem',color:'var(--tx2)',fontSize:13}}>Nothing found.</div>
+            :results.map((r,i)=>(
+              <div key={`${r.group}|${r.subset}|${i}`}
+                onClick={()=>{
+                  setSelPuzzle(r.puzzle);setSelGroup(r.group);setSelSubset(r.subset);
+                  setEditingAlg(null);setAddingAlg(false);setAddingSubset(false);
+                  setEditingGroupName(null);setEditingSubsetName(null);setSearch('');
+                }}
+                title="Click to open this set"
+                style={{padding:'10px 14px',marginBottom:6,background:'var(--bg0)',border:'1px solid var(--bd0)',borderRadius:'var(--radius)',cursor:'pointer'}}>
+                <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:5,flexWrap:'wrap'}}>
+                  <span style={{fontWeight:700,fontSize:13}}>{r.name}</span>
+                  <Badge accent>{puzzleLabel(r.puzzle)}</Badge>
+                  <Badge>{r.groupName}</Badge>
+                  <Badge>{r.subset}</Badge>
+                </div>
+                <AlgDisplay alg={r.algorithm}/>
+              </div>
+            ))}
+        </div>
+      ):(
+        <div style={{display:'flex',flex:1,minHeight:0,overflow:'hidden'}}>
+
+          {/* ── Puzzle column ── */}
+          <div style={{width:128,flexShrink:0,overflowY:'auto',borderRight:'1px solid var(--bd0)',background:'var(--bg1)'}}>
+            <div style={{padding:'9px 10px 5px',position:'sticky',top:0,background:'var(--bg1)',zIndex:1}}>
+              <span style={{fontSize:10,fontWeight:700,color:'var(--tx2)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Puzzles</span>
+            </div>
+            {visiblePuzzles.map(p=>{
+              const st=cubeStats(p.id);
+              const active=selPuzzle===p.id;
+              return(
+                <div key={p.id} onClick={()=>selectPuzzle(p.id)}
+                  title={p.id===DEFAULT_PUZZLE?`${p.label} sets are stored without a prefix`:`${p.label} sets are stored with the "${p.id}:" prefix`}
+                  style={{
+                    padding:'9px 10px',cursor:'pointer',userSelect:'none',
+                    background:active?'var(--bg0)':'transparent',
+                    borderLeft:active?'2px solid var(--acc)':'2px solid transparent',
+                    display:'flex',flexDirection:'column',gap:1,
+                  }}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:5}}>
+                    <span style={{fontSize:13,fontWeight:active?700:500}}>{p.label}</span>
+                    {p.legacy&&<Badge>legacy</Badge>}
+                  </div>
+                  <div style={{fontSize:10,color:'var(--tx2)'}}>{st.groups} sets · {st.algs} algs</div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ── Group column ── */}
+          <div style={{width:160,flexShrink:0,overflowY:'auto',borderRight:'1px solid var(--bd0)',background:'var(--bg1)'}}>
+            <div style={{padding:'9px 10px 5px',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:'var(--bg1)',zIndex:1}}>
+              <span style={{fontSize:10,fontWeight:700,color:'var(--tx2)',textTransform:'uppercase',letterSpacing:'0.07em'}}>{puzzleLabel(selPuzzle)} sets</span>
+              <button onClick={()=>setAddingGroup(v=>!v)} title={`New ${puzzleLabel(selPuzzle)} set`}
+                style={{border:'none',background:'none',height:'auto',padding:'2px 4px',fontSize:16,color:'var(--tx1)'}}>
+                <i className="ti ti-plus"></i>
+              </button>
+            </div>
+            {addingGroup&&(
+              <div style={{padding:'6px 8px',borderBottom:'1px solid var(--bd0)'}}>
+                <input autoFocus placeholder={`New ${puzzleLabel(selPuzzle)} set`} value={newGroupName}
+                  onChange={e=>setNewGroupName(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter')addGroup();if(e.key==='Escape')setAddingGroup(false);}}
+                  style={{marginBottom:3,height:26,fontSize:12}}/>
+                <div style={{fontSize:10,color:'var(--tx2)',marginBottom:5,fontFamily:'var(--mono)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                  {categoryKey(selPuzzle,newGroupName.trim()||'Name')}
+                </div>
+                <div style={{display:'flex',gap:4}}>
+                  <button onClick={addGroup} style={{flex:1,fontSize:11,height:22,padding:0,justifyContent:'center'}}>Add</button>
+                  <button onClick={()=>setAddingGroup(false)} style={{flex:1,fontSize:11,height:22,padding:0,justifyContent:'center'}}>Cancel</button>
+                </div>
+              </div>
+            )}
+            {visibleGroupKeys.length===0&&!addingGroup&&(
+              <div style={{padding:'18px 10px',textAlign:'center',color:'var(--tx2)',fontSize:11,lineHeight:1.6}}>
+                No {puzzleLabel(selPuzzle)} sets yet.<br/>Click + to add one.
+              </div>
+            )}
+            {visibleGroupKeys.map(g=>(
+              <div key={g}
+                draggable
+                onDragStart={e=>onGroupDragStart(e,g)}
+                onDragOver={e=>onGroupDragOver(e,g)}
+                onDrop={e=>onGroupDrop(e,g)}
+                onDragEnd={onGroupDragEnd}
+                title={g}
+                onClick={()=>{if(editingGroupName!==g){setSelGroup(g);setSelSubset(data[g]?.[0]?.subset||null);setEditingAlg(null);setAddingAlg(false);setAddingSubset(false);}}}
+                onDoubleClick={e=>{e.stopPropagation();setEditingGroupName(g);setInlineVal(groupName(g));}}
+                className={dragOverGroup===g?'drag-over-group':''}
+                style={{
+                  padding:'8px 10px',cursor:'pointer',userSelect:'none',
+                  background:selGroup===g?'var(--bg0)':'transparent',
+                  borderLeft:selGroup===g?'2px solid var(--acc)':'2px solid transparent',
+                  opacity:dragGroup===g?0.4:1,
+                  display:'flex',alignItems:'center',gap:7,
+                }}>
+                <i className="ti ti-grip-vertical" style={{fontSize:13,color:'var(--tx2)',flexShrink:0,cursor:'grab'}}></i>
+                <div style={{minWidth:0,flex:1}}>
+                  {editingGroupName===g
+                    ?<input autoFocus value={inlineVal} onChange={e=>setInlineVal(e.target.value)}
+                        onBlur={()=>renameGroup(g,inlineVal)}
+                        onKeyDown={e=>{if(e.key==='Enter')renameGroup(g,inlineVal);if(e.key==='Escape'){setEditingGroupName(null);}}}
+                        onClick={e=>e.stopPropagation()}
+                        style={{width:'100%',fontSize:12,height:22,padding:'0 4px'}}/>
+                    :<div style={{fontSize:13,fontWeight:selGroup===g?700:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{groupName(g)}</div>
+                  }
+                  <div style={{fontSize:10,color:'var(--tx2)',marginTop:1}}>{(data[g]||[]).length} sub · {algCount(g)} algs</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* ── Subset column ── */}
+          {selGroup&&(
+            <div style={{width:195,flexShrink:0,borderRight:'1px solid var(--bd0)',background:'var(--bg0)',display:'flex',flexDirection:'column'}}>
+              <div style={{padding:'9px 10px 5px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:5,flexShrink:0,position:'sticky',top:0,background:'var(--bg0)',zIndex:1}}>
+                <div style={{display:'flex',alignItems:'center',gap:5,minWidth:0}}>
+                  <Badge accent>{puzzleLabel(selPuzzle)}</Badge>
+                  <span title={selGroup} style={{fontSize:11,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{groupName(selGroup)}</span>
+                </div>
+                <button onClick={()=>setAddingSubset(v=>!v)} title="New subset"
+                  style={{border:'none',background:'none',height:'auto',padding:'2px 4px',fontSize:16,color:'var(--tx1)',flexShrink:0}}>
+                  <i className="ti ti-plus"></i>
+                </button>
+              </div>
+              {addingSubset&&(
+                <div style={{padding:'6px 8px',borderBottom:'1px solid var(--bd0)',flexShrink:0}}>
+                  <input autoFocus placeholder="Subset name" value={newSubsetName}
+                    onChange={e=>setNewSubsetName(e.target.value)}
+                    onKeyDown={e=>{if(e.key==='Enter')addSubset();if(e.key==='Escape')setAddingSubset(false);}}
+                    style={{marginBottom:4,height:26,fontSize:12}}/>
+                  <div style={{display:'flex',gap:4}}>
+                    <button onClick={addSubset} style={{flex:1,fontSize:11,height:22,padding:0,justifyContent:'center'}}>Add</button>
+                    <button onClick={()=>setAddingSubset(false)} style={{flex:1,fontSize:11,height:22,padding:0,justifyContent:'center'}}>Cancel</button>
+                  </div>
+                </div>
+              )}
+              <div style={{flex:1,overflowY:'auto'}}>
+                {subsets.map(sub=>(
+                  <div key={sub.subset}
+                    draggable
+                    onDragStart={e=>onSubsetDragStart(e,sub.subset)}
+                    onDragOver={e=>{
+                      if(dragSubset&&dragSubset!==sub.subset){onSubsetOrderDragOver(e,sub.subset);}
+                      else if(dragAlg){e.preventDefault();setDragOverSubset(sub.subset);}
+                    }}
+                    onDragLeave={()=>{setDragOverSubset(null);setDragOverSubsetOrder(null);}}
+                    onDrop={e=>{
+                      if(dragSubset) onSubsetOrderDrop(e,sub.subset);
+                      else if(dragAlg) onSubsetDropZone(e,sub.subset);
+                    }}
+                    onDragEnd={onSubsetDragEnd}
+                    onClick={()=>{if(editingSubsetName!==sub.subset){setSelSubset(sub.subset);setEditingAlg(null);setAddingAlg(false);}}}
+                    onDoubleClick={e=>{e.stopPropagation();setEditingSubsetName(sub.subset);setInlineVal(sub.subset);}}
+                    className={dragOverSubset===sub.subset?'drag-over-subset':dragOverSubsetOrder===sub.subset?'drag-over-group':''}
+                    style={{
+                      padding:'7px 10px',cursor:'pointer',userSelect:'none',
+                      background:selSubset===sub.subset?'var(--bg1)':'transparent',
+                      borderLeft:selSubset===sub.subset?'2px solid var(--acc)':'2px solid transparent',
+                      display:'flex',alignItems:'center',gap:6,
+                      opacity:dragSubset===sub.subset?0.4:1,
+                      transition:'background 0.1s',
+                    }}>
+                    <i className="ti ti-grip-vertical" style={{fontSize:12,color:'var(--tx2)',flexShrink:0,cursor:'grab'}}></i>
+                    {editingSubsetName===sub.subset
+                      ?<input autoFocus value={inlineVal} onChange={e=>setInlineVal(e.target.value)}
+                          onBlur={()=>renameSubset(sub.subset,inlineVal)}
+                          onKeyDown={e=>{if(e.key==='Enter')renameSubset(sub.subset,inlineVal);if(e.key==='Escape')setEditingSubsetName(null);}}
+                          onClick={e=>e.stopPropagation()}
+                          style={{flex:1,fontSize:12,height:22,padding:'0 4px'}}/>
+                      :<span style={{fontSize:12,fontWeight:selSubset===sub.subset?700:400,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sub.subset}</span>
+                    }
+                    <span style={{fontSize:10,color:'var(--tx2)',flexShrink:0}}>{sub.algorithms.length}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{padding:'8px 10px',borderTop:'1px solid var(--bd0)',flexShrink:0,display:'flex',flexDirection:'column',gap:4}}>
+                <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2}}>
+                  <span style={{fontSize:10,color:'var(--tx2)',textTransform:'uppercase',letterSpacing:'0.05em',flexShrink:0}}>Puzzle</span>
+                  <select value={groupPuzzle(selGroup)} onChange={e=>moveGroupToPuzzle(e.target.value)}
+                    title="Move this set to another puzzle"
+                    style={{height:24,fontSize:11,padding:'0 5px',flex:1,minWidth:0}}>
+                    {PUZZLES.filter(p=>!p.legacy||groupPuzzle(selGroup)===p.id).map(p=>(
+                      <option key={p.id} value={p.id}>{p.label}</option>
+                    ))}
+                  </select>
+                </div>
+                {selSubset&&(
+                  <button onClick={()=>deleteSubset(selSubset)}
+                    style={{fontSize:11,height:24,padding:'0 8px',color:'var(--red)',borderColor:'var(--red-bd)',justifyContent:'center'}}>
+                    <i className="ti ti-trash" style={{fontSize:11}}></i> Delete subset
+                  </button>
+                )}
+                <button onClick={()=>deleteGroup(selGroup)}
+                  style={{fontSize:11,height:24,padding:'0 8px',color:'var(--red)',borderColor:'var(--red-bd)',justifyContent:'center'}}>
+                  <i className="ti ti-trash" style={{fontSize:11}}></i> Delete set
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Algorithm panel ── */}
+          <div style={{flex:1,overflowY:'auto',padding:'12px 16px',minWidth:0}}
+            onDragOver={e=>{if(dragAlg)e.preventDefault();}}
+            onDrop={e=>{if(dragAlg&&selSubset&&curSubset){onSubsetDropZone(e,selSubset);}}}
+          >
+            {!selSubset||!curSubset?(
+              <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:'var(--tx2)',fontSize:13,textAlign:'center',lineHeight:1.7}}>
+                {selGroup?'Select a subset to view its algorithms':`No ${puzzleLabel(selPuzzle)} sets yet — add one with the + button in the Sets column.`}
+              </div>
+            ):(
+              <>
+                <div style={{display:'flex',alignItems:'center',gap:9,marginBottom:14,flexWrap:'wrap'}}>
+                  <Badge accent>{puzzleLabel(selPuzzle)}</Badge>
+                  <h2 style={{fontSize:15,fontWeight:700}}>{curSubset.subset}</h2>
+                  <Badge>{curSubset.algorithms.length} algorithms</Badge>
+                  {dragAlg&&dragAlg.subset!==selSubset&&(
+                    <Badge accent>Drop here to move algorithm</Badge>
+                  )}
+                  <button onClick={()=>{setAddingAlg(v=>!v);setEditingAlg(null);}} style={{marginLeft:'auto',fontSize:12,height:26,padding:'0 10px'}}>
+                    <i className="ti ti-plus" style={{fontSize:12}}></i> Add algorithm
+                  </button>
+                </div>
+
+                {/* New alg form */}
+                {addingAlg&&(
+                  <div style={{marginBottom:12,padding:'12px 14px',background:'var(--acc-bg)',border:`1px solid var(--acc)`,borderRadius:'var(--radius)'}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'var(--acc-tx)',marginBottom:8}}>New algorithm</div>
+                    <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+                      <input autoFocus placeholder="Name  (e.g. T Perm)" value={newAlg.name}
+                        onChange={e=>setNewAlg(p=>({...p,name:e.target.value}))}
+                        style={{flex:'0 0 210px',height:28}}/>
+                      <input placeholder="Algorithm  (e.g. R U R' U')" value={newAlg.algorithm}
+                        onChange={e=>setNewAlg(p=>({...p,algorithm:e.target.value}))}
+                        onKeyDown={e=>{if(e.key==='Enter')addAlg();if(e.key==='Escape')setAddingAlg(false);}}
+                        style={{flex:1,minWidth:180,fontFamily:'var(--mono)',fontSize:12,height:28}}/>
+                    </div>
+                    {newAlg.algorithm&&<div style={{marginBottom:8}}><AlgDisplay alg={newAlg.algorithm}/></div>}
+                    <div style={{display:'flex',gap:6}}>
+                      <button onClick={addAlg} style={{fontSize:12,height:26}}>Save</button>
+                      <button onClick={()=>setAddingAlg(false)} style={{fontSize:12,height:26}}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Algorithm list */}
+                {curSubset.algorithms.length===0?(
+                  <div style={{textAlign:'center',padding:'2.5rem',color:'var(--tx2)',fontSize:13,border:'1px dashed var(--bd1)',borderRadius:'var(--radius)'}}>
+                    {dragAlg?'Drop here to move algorithm to this subset':'No algorithms yet — add one above.'}
+                  </div>
+                ):curSubset.algorithms.map((alg,i)=>(
+                  <div key={i}
+                    draggable={editingAlg!==alg.name}
+                    onDragStart={e=>onAlgDragStart(e,selSubset,i)}
+                    onDragOver={e=>onAlgDragOver(e,selSubset,i)}
+                    onDrop={e=>onAlgDrop(e,selSubset,i)}
+                    onDragEnd={onAlgDragEnd}
+                    style={{
+                      marginBottom:6,
+                      background:'var(--bg0)',
+                      border:editingAlg===alg.name?`1px solid var(--acc)`:'1px solid var(--bd0)',
+                      borderRadius:'var(--radius)',
+                      opacity:dragAlg&&dragAlg.subset===selSubset&&dragAlg.index===i?0.35:1,
+                      borderTop:dragOverAlg?.subset===selSubset&&dragOverAlg?.index===i&&dragOverAlg?.position==='top'?'2px solid var(--acc)':undefined,
+                      borderBottom:dragOverAlg?.subset===selSubset&&dragOverAlg?.index===i&&dragOverAlg?.position==='bot'?'2px solid var(--acc)':undefined,
+                      transition:'border 0.08s',
+                    }}>
+                    {editingAlg===alg.name?(
+                      <div style={{padding:'12px 14px'}}>
+                        <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+                          <input autoFocus value={editVals.name}
+                            onChange={e=>setEditVals(p=>({...p,name:e.target.value}))}
+                            style={{flex:'0 0 210px',fontWeight:700,height:28}}/>
+                          <input value={editVals.algorithm}
+                            onChange={e=>setEditVals(p=>({...p,algorithm:e.target.value}))}
+                            onKeyDown={e=>{if(e.key==='Enter')saveEdit();if(e.key==='Escape')setEditingAlg(null);}}
+                            style={{flex:1,minWidth:180,fontFamily:'var(--mono)',fontSize:12,height:28}}/>
+                        </div>
+                        {editVals.algorithm&&<div style={{marginBottom:8}}><AlgDisplay alg={editVals.algorithm}/></div>}
+                        <div style={{display:'flex',gap:6}}>
+                          <button onClick={saveEdit} style={{fontSize:12,height:26}}>Save</button>
+                          <button onClick={()=>setEditingAlg(null)} style={{fontSize:12,height:26}}>Cancel</button>
+                        </div>
+                      </div>
+                    ):(
+                      <div style={{padding:'9px 14px',display:'flex',alignItems:'flex-start',gap:10}}>
+                        <i className="ti ti-grip-vertical" style={{fontSize:14,color:'var(--tx2)',marginTop:1,cursor:'grab',flexShrink:0}}></i>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>{alg.name}</div>
+                          <AlgDisplay alg={alg.algorithm}/>
+                        </div>
+                        <div style={{display:'flex',gap:4,flexShrink:0}}>
+                          <button onClick={()=>{setEditingAlg(alg.name);setEditVals({name:alg.name,algorithm:alg.algorithm});setAddingAlg(false);}}
+                            title="Edit" style={{fontSize:12,height:26,padding:'0 8px'}}>
+                            <i className="ti ti-edit" style={{fontSize:13}}></i>
+                          </button>
+                          <button onClick={()=>deleteAlg(alg.name)}
+                            title="Delete" style={{fontSize:12,height:26,padding:'0 8px',color:'var(--red)',borderColor:'var(--red-bd)'}}>
+                            <i className="ti ti-trash" style={{fontSize:13}}></i>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
