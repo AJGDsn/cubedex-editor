@@ -4,6 +4,12 @@ A standalone, browser-based editor for [Cubedex](https://cubedex.app/) algorithm
 
 Open `CubeDex-Editor.html` in a modern browser (Chrome or Edge recommended) and load a Cubedex JSON export. You can browse, add, rename, reorder, move, and delete sets, subsets, and algorithms, then export the library back to JSON.
 
+## Live editor
+
+Use it directly in your browser: **<https://ajgdsn.github.io/cubedex-editor/>**
+
+The site is published from the `main` branch with GitHub Pages. To use the editor offline, download `CubeDex-Editor.html` and open it locally.
+
 ## Features
 
 - **Puzzle-aware navigation** — 3×3, 2×2, 4×4, 5×5, Pyraminx, and Megaminx each get their own library view.
